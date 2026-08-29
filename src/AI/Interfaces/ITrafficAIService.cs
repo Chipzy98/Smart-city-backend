@@ -1,14 +1,12 @@
 ﻿using SmartcityBackend.src.AI.Models;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
-namespace SmartcityBackend.src.AI.Interfaces
+namespace SmartcityBackend.src.AI.Interfaces;
+
+public interface ITrafficAIService
 {
-    public interface ITrafficAIService
-    {
-        TrafficAIOutput Predict(TrafficAIInput input);
-    }
+    /// <summary>Synchronous wrapper — prefer <see cref="PredictAsync"/> in new code.</summary>
+    TrafficAIOutput Predict(TrafficAIInput input);
+
+    /// <summary>Async congestion prediction with cancellation support.</summary>
+    Task<TrafficAIOutput> PredictAsync(TrafficAIInput input, CancellationToken ct = default);
 }
