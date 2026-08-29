@@ -18,8 +18,7 @@ var host = new HostBuilder()
         services.AddDbContext<SmartCityDbContext>(options =>
             options.UseSqlServer(connectionString));
 
-        // ── Named HttpClient for the Anthropic Claude API ─────────────────
-        // 30 s is comfortable for most responses; raise if you enable streaming.
+        // ── Named HttpClient for Claude API ───────────────────────────────
         services.AddHttpClient("Anthropic", client =>
         {
             client.BaseAddress = new Uri("https://api.anthropic.com");
@@ -27,19 +26,18 @@ var host = new HostBuilder()
         });
 
         // ── Domain Services ───────────────────────────────────────────────
+        services.AddScoped<IAuthService, AuthService>();      // NEW
         services.AddScoped<ITrafficService, TrafficService>();
         services.AddScoped<IWasteService, WasteService>();
         services.AddScoped<IEnergyService, EnergyService>();
         services.AddScoped<IDashboardService, DashboardService>();
 
         // ── AI Services (Claude-powered) ──────────────────────────────────
-        // Singleton is safe because the services hold no mutable state;
-        // IHttpClientFactory and ILogger are both thread-safe.
         services.AddSingleton<ITrafficAIService, TrafficAIService>();
         services.AddSingleton<IEnergyAIService, EnergyAIService>();
         services.AddSingleton<IWasteAIService, WasteAIService>();
 
-        // ── Authentication / Authorisation ────────────────────────────────
+        // ── Auth / Token ──────────────────────────────────────────────────
         services.AddScoped<ITokenService, TokenService>();
     })
     .Build();

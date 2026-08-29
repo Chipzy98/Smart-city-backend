@@ -10,16 +10,21 @@
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    <PackageReference Include="Microsoft.Azure.Functions.Worker" Version="2.52.0" />
-    <PackageReference Include="Microsoft.Azure.Functions.Worker.OpenTelemetry" Version="1.2.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.0" />
-    <PackageReference Include="Microsoft.ML" Version="5.0.0" />
-    <PackageReference Include="Microsoft.ML.FastTree" Version="5.0.0" />
-    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
-    <PackageReference Include="Azure.Monitor.OpenTelemetry.Exporter" Version="1.7.0" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker"                            Version="2.52.0" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.OpenTelemetry"              Version="1.2.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore"                               Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer"                     Version="8.0.0" />
+    <PackageReference Include="Microsoft.ML"                                                Version="5.0.0" />
+    <PackageReference Include="Microsoft.ML.FastTree"                                       Version="5.0.0" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting"                           Version="1.15.3" />
+    <PackageReference Include="Azure.Monitor.OpenTelemetry.Exporter"                       Version="1.7.0" />
     <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.Http.AspNetCore" Version="2.1.0" />
-    <PackageReference Include="Microsoft.Azure.Functions.Worker.Sdk" Version="2.0.7" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.Sdk"                       Version="2.0.7" />
+
+    <!-- Auth packages (NEW) -->
+    <PackageReference Include="BCrypt.Net-Next"                                             Version="4.0.3" />
+    <PackageReference Include="Microsoft.IdentityModel.Tokens"                             Version="7.5.0" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt"                            Version="7.5.0" />
   </ItemGroup>
 
   <ItemGroup>
