@@ -15,22 +15,30 @@ var host = new HostBuilder()
         services.AddDbContext<SmartCityDbContext>(o =>
             o.UseSqlServer(Environment.GetEnvironmentVariable("DefaultConnection")));
 
+        // ── HTTP Clients ──────────────────────────────────────────────────
         services.AddHttpClient("Anthropic", c =>
         {
             c.BaseAddress = new Uri("https://api.anthropic.com");
             c.Timeout = TimeSpan.FromSeconds(45);
         });
 
-        // ── Domain services ───────────────────────────────────────────────
+        services.AddHttpClient("TomTom", c =>
+        {
+            c.BaseAddress = new Uri("https://api.tomtom.com");
+            c.Timeout = TimeSpan.FromSeconds(15);
+        });
+
+        // ── Domain Services ───────────────────────────────────────────────
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<ITrafficService, TrafficService>();
         services.AddScoped<IWasteService, WasteService>();
         services.AddScoped<IEnergyService, EnergyService>();
         services.AddScoped<IDashboardService, DashboardService>();
+        services.AddScoped<TomTomTrafficService>();   // ← NEW
 
-        // ── AI services ───────────────────────────────────────────────────
+        // ── AI Services ───────────────────────────────────────────────────
         services.AddSingleton<ITrafficAIService, TrafficAIService>();
-        services.AddSingleton<IRouteTrafficAIService, RouteTrafficAIService>();  // NEW
+        services.AddSingleton<IRouteTrafficAIService, RouteTrafficAIService>();
         services.AddSingleton<IEnergyAIService, EnergyAIService>();
         services.AddSingleton<IWasteAIService, WasteAIService>();
 

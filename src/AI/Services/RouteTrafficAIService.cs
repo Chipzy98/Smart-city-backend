@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 using SmartcityBackend.src.AI.Interfaces;
 using SmartcityBackend.src.AI.Models;
 using System.Text;
@@ -15,7 +16,7 @@ namespace SmartcityBackend.src.AI.Services
         private const string ApiUrl = "https://api.anthropic.com/v1/messages";
         private const string Model = "claude-sonnet-4-6";
         private const string ApiVersion = "2023-06-01";
-        private const int MaxTokens = 400;
+        private const int MaxTokens = 1200;
         private const int RetryCount = 2;
 
         public RouteTrafficAIService(
@@ -39,7 +40,6 @@ namespace SmartcityBackend.src.AI.Services
                 3 => "Stormy",
                 _ => "Unknown"
             };
-
             var dayLabel = input.DayOfWeek switch
             {
                 0 => "Sunday",
@@ -51,39 +51,46 @@ namespace SmartcityBackend.src.AI.Services
                 6 => "Saturday",
                 _ => "Weekday"
             };
-
-            // Haversine distance estimate (km) for context
-            var distEst = HaversineKm(
-                input.OriginLat, input.OriginLng,
-                input.DestinationLat, input.DestinationLng);
-
             var isRushHour = (input.Hour is >= 7 and <= 9) || (input.Hour is >= 17 and <= 19);
+            var distEst = HaversineKm(input.OriginLat, input.OriginLng,
+                                          input.DestinationLat, input.DestinationLng);
 
             var prompt =
-                "You are a smart city route traffic analysis AI for Sri Lanka.\n" +
-                "Analyse the traffic conditions between the two locations and return ONLY JSON.\n\n" +
-                "=== Route ===\n" +
-                $"Origin      : {input.OriginName} ({input.OriginLat:F4}, {input.OriginLng:F4})\n" +
-                $"Destination : {input.DestinationName} ({input.DestinationLat:F4}, {input.DestinationLng:F4})\n" +
-                $"Est. Distance: ~{distEst:F1} km (straight line — adjust for actual roads)\n\n" +
+                "You are a Sri Lanka smart city route traffic AI.\n" +
+                "Analyse the route and suggest 2-3 alternative road options.\n" +
+                "Use your knowledge of Sri Lanka roads (A1, A6, E01 Southern Expressway, Kandy Road, etc.).\n\n" +
+                "=== Journey ===\n" +
+                $"From : {input.OriginName} ({input.OriginLat:F4}, {input.OriginLng:F4})\n" +
+                $"To   : {input.DestinationName} ({input.DestinationLat:F4}, {input.DestinationLng:F4})\n" +
+                $"Straight-line distance: ~{distEst:F1} km\n\n" +
                 "=== Conditions ===\n" +
-                $"Time        : {input.Hour:00}:00  |  Day: {dayLabel}  |  Rush hour: {(isRushHour ? "Yes" : "No")}\n" +
-                $"Weather     : {weatherLabel}\n\n" +
+                $"Time: {input.Hour:00}:00 | Day: {dayLabel} | Rush hour: {(isRushHour ? "Yes" : "No")} | Weather: {weatherLabel}\n\n" +
                 "=== Instructions ===\n" +
-                "1. distanceKm      — actual road distance in km (use Sri Lanka road knowledge)\n" +
-                "2. estimatedMinutes— realistic travel time including traffic\n" +
-                "3. congestionLevel — 0 (clear) to 100 (gridlock) for this route right now\n" +
-                "4. congestionStatus— exactly one of: Low Congestion / Moderate Congestion / High Congestion\n" +
-                "5. suggestion      — one specific practical tip for this exact route (mention road names if known)\n" +
-                "6. riskScore       — 0-100 overall journey risk (weather + congestion + time of day)\n\n" +
-                "Reply ONLY with this JSON (no markdown):\n" +
+                "1. Suggest 2-3 REAL alternative routes using actual Sri Lanka road names.\n" +
+                "2. For each route provide approximate waypoints (lat/lng) along the road path — minimum 4 points, maximum 8 points.\n" +
+                "3. Mark the best route as isRecommended: true.\n" +
+                "4. Estimate real road distances and times (not straight-line).\n" +
+                "5. Consider current conditions for congestion levels.\n\n" +
+                "Reply ONLY with this JSON (no markdown, no extra text):\n" +
                 "{\n" +
-                "  \"distanceKm\"      : <float>,\n" +
-                "  \"estimatedMinutes\": <int>,\n" +
-                "  \"congestionLevel\" : <float 0-100>,\n" +
-                "  \"congestionStatus\": \"<status>\",\n" +
-                "  \"suggestion\"      : \"<route tip>\",\n" +
-                "  \"riskScore\"       : <float 0-100>\n" +
+                "  \"summary\": \"<one sentence about current traffic conditions>\",\n" +
+                "  \"routes\": [\n" +
+                "    {\n" +
+                "      \"routeName\": \"<short name eg: Via E01 Expressway>\",\n" +
+                "      \"roadNames\": \"<road names eg: E01 → A1 → Peradeniya Road>\",\n" +
+                "      \"distanceKm\": <float>,\n" +
+                "      \"estimatedMinutes\": <int>,\n" +
+                "      \"congestionLevel\": <float 0-100>,\n" +
+                "      \"congestionStatus\": \"<Low Congestion|Moderate Congestion|High Congestion>\",\n" +
+                "      \"riskScore\": <float 0-100>,\n" +
+                "      \"reason\": \"<why choose or avoid this route>\",\n" +
+                "      \"isRecommended\": <true|false>,\n" +
+                "      \"waypoints\": [\n" +
+                "        {\"lat\": <float>, \"lng\": <float>},\n" +
+                "        ...\n" +
+                "      ]\n" +
+                "    }\n" +
+                "  ]\n" +
                 "}";
 
             for (var attempt = 0; attempt <= RetryCount; attempt++)
@@ -91,25 +98,58 @@ namespace SmartcityBackend.src.AI.Services
                 try
                 {
                     var text = await CallClaudeAsync(prompt, MaxTokens, ct);
-                    using var doc = JsonDocument.Parse(CleanJson(text));
-                    var root = doc.RootElement;
+                    var raw = JsonConvert.DeserializeObject<dynamic>(CleanJson(text));
+                    if (raw == null) throw new Exception("Null response");
 
-                    var result = new RouteTrafficAIOutput
+                    var routes = new List<RouteOption>();
+
+                    foreach (var r in raw.routes)
                     {
-                        DistanceKm = Math.Max(0, root.GetProperty("distanceKm").GetSingle()),
-                        EstimatedMinutes = Math.Max(1, root.GetProperty("estimatedMinutes").GetInt32()),
-                        CongestionLevel = Math.Clamp(root.GetProperty("congestionLevel").GetSingle(), 0, 100),
-                        CongestionStatus = root.GetProperty("congestionStatus").GetString() ?? "Moderate Congestion",
-                        Suggestion = root.GetProperty("suggestion").GetString() ?? "Drive safely.",
-                        RiskScore = Math.Clamp(root.GetProperty("riskScore").GetSingle(), 0, 100),
-                    };
+                        var waypoints = new List<RouteWaypoint>();
+                        if (r.waypoints != null)
+                        {
+                            foreach (var w in r.waypoints)
+                                waypoints.Add(new RouteWaypoint
+                                {
+                                    Lat = (double)w.lat,
+                                    Lng = (double)w.lng
+                                });
+                        }
+
+                        routes.Add(new RouteOption
+                        {
+                            RouteName = r.routeName != null ? (string)r.routeName : "",
+                            RoadNames = r.roadNames != null ? (string)r.roadNames : "",
+                            DistanceKm = r.distanceKm != null ? (float)r.distanceKm : 0f,
+                            EstimatedMinutes = r.estimatedMinutes != null ? (int)r.estimatedMinutes : 0,
+                            CongestionLevel = r.congestionLevel != null ? (float)r.congestionLevel : 0f,
+                            CongestionStatus = r.congestionStatus != null ? (string)r.congestionStatus : "",
+                            RiskScore = r.riskScore != null ? (float)r.riskScore : 0f,
+                            Reason = r.reason != null ? (string)r.reason : "",
+                            IsRecommended = r.isRecommended != null ? (bool)r.isRecommended : false,
+                            Waypoints = waypoints,
+                        });
+                    }
+
+                    var best = routes.FirstOrDefault(r => r.IsRecommended)
+                               ?? routes.OrderBy(r => r.CongestionLevel).FirstOrDefault()
+                               ?? new RouteOption();
 
                     _logger.LogInformation(
-                        "[RouteAI] {Origin}→{Dest}: {Dist}km, {Min}min, congestion={Level}",
-                        input.OriginName, input.DestinationName,
-                        result.DistanceKm, result.EstimatedMinutes, result.CongestionLevel);
+                        "[RouteAI] {Origin}→{Dest}: {Count} routes, best={Best}",
+                        input.OriginName, input.DestinationName, routes.Count, best.RouteName);
 
-                    return result;
+                    return new RouteTrafficAIOutput
+                    {
+                        Routes = routes,
+                        Summary = (string)raw.summary ?? "",
+                        DistanceKm = best.DistanceKm,
+                        EstimatedMinutes = best.EstimatedMinutes,
+                        CongestionLevel = best.CongestionLevel,
+                        CongestionStatus = best.CongestionStatus,
+                        Suggestion = best.Reason,
+                        RiskScore = best.RiskScore,
+                    };
                 }
                 catch (Exception ex) when (attempt < RetryCount)
                 {
@@ -125,7 +165,8 @@ namespace SmartcityBackend.src.AI.Services
             return FallbackRoute(input, distEst);
         }
 
-        // ── Haversine ─────────────────────────────────────────────────────────
+        // ── Helpers ───────────────────────────────────────────────────────────
+
         private static double HaversineKm(double lat1, double lon1, double lat2, double lon2)
         {
             const double R = 6371;
@@ -137,33 +178,54 @@ namespace SmartcityBackend.src.AI.Services
             return R * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
         }
 
-        // ── Fallback ──────────────────────────────────────────────────────────
         private static RouteTrafficAIOutput FallbackRoute(RouteTrafficAIInput input, double distKm)
         {
-            var roadDist = distKm * 1.35; // road factor
+            var roadDist = distKm * 1.35;
             var isRushHour = (input.Hour is >= 7 and <= 9) || (input.Hour is >= 17 and <= 19);
-            var congestion = (float)Math.Clamp(
-                (isRushHour ? 35 : 15) + (input.Weather * 8), 0, 100);
+            var congestion = (float)Math.Clamp((isRushHour ? 35 : 15) + (input.Weather * 8), 0, 100);
             var speedKmh = congestion >= 70 ? 25 : congestion >= 40 ? 45 : 65;
             var minutes = (int)(roadDist / speedKmh * 60);
+            var status = congestion >= 75 ? "High Congestion"
+                           : congestion >= 40 ? "Moderate Congestion" : "Low Congestion";
 
-            return new RouteTrafficAIOutput
+            var midLat = (input.OriginLat + input.DestinationLat) / 2;
+            var midLng = (input.OriginLng + input.DestinationLng) / 2;
+
+            var route = new RouteOption
             {
+                RouteName = "Main Route",
+                RoadNames = "Main Road",
                 DistanceKm = (float)roadDist,
                 EstimatedMinutes = minutes,
                 CongestionLevel = congestion,
-                CongestionStatus = congestion >= 75 ? "High Congestion"
-                                 : congestion >= 40 ? "Moderate Congestion"
-                                 : "Low Congestion",
-                Suggestion = "Check live traffic before departing.",
+                CongestionStatus = status,
                 RiskScore = Math.Clamp(congestion * 0.7f + input.Weather * 8, 0, 100),
+                Reason = "Standard route — check live traffic before departing.",
+                IsRecommended = true,
+                Waypoints =
+                [
+                    new() { Lat = input.OriginLat,      Lng = input.OriginLng },
+                    new() { Lat = midLat,               Lng = midLng },
+                    new() { Lat = input.DestinationLat, Lng = input.DestinationLng },
+                ],
+            };
+
+            return new RouteTrafficAIOutput
+            {
+                Routes = [route],
+                Summary = "Route analysis based on estimated conditions.",
+                DistanceKm = route.DistanceKm,
+                EstimatedMinutes = route.EstimatedMinutes,
+                CongestionLevel = route.CongestionLevel,
+                CongestionStatus = route.CongestionStatus,
+                Suggestion = route.Reason,
+                RiskScore = route.RiskScore,
             };
         }
 
-        // ── Claude API ────────────────────────────────────────────────────────
         private async Task<string> CallClaudeAsync(string prompt, int maxTokens, CancellationToken ct)
         {
-            var body = JsonSerializer.Serialize(new
+            var body = System.Text.Json.JsonSerializer.Serialize(new
             {
                 model = Model,
                 max_tokens = maxTokens,

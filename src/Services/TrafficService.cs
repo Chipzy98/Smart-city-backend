@@ -36,7 +36,6 @@ namespace SmartcityBackend.src.Services
                     x.Longitude.ToString().Contains(q));
 
             var totalCount = await query.CountAsync();
-
             var data = await query
                 .OrderByDescending(x => x.RecordedAt)
                 .Skip((page - 1) * pageSize)
@@ -54,7 +53,7 @@ namespace SmartcityBackend.src.Services
             return new { totalCount, page, pageSize, data };
         }
 
-        // ── Single-point prediction ───────────────────────────────────────────
+        // ── Single-point AI prediction ────────────────────────────────────────
         public async Task<object> PredictTrafficAsync(TrafficPredictionRequestVM request)
         {
             var aiResult = await _trafficAI.PredictAsync(new TrafficAIInput
@@ -73,7 +72,7 @@ namespace SmartcityBackend.src.Services
             };
         }
 
-        // ── Route A → B analysis ──────────────────────────────────────────────
+        // ── Route A → B analysis with multiple route suggestions ──────────────
         public async Task<object> AnalyseRouteAsync(Guid userId, RouteTrafficRequestVM request)
         {
             var now = DateTime.UtcNow;
@@ -91,7 +90,7 @@ namespace SmartcityBackend.src.Services
                 Weather = request.Weather,
             });
 
-            // Persist to DB
+            // Save best route to DB
             var record = new SmartRouteTraffic
             {
                 RouteTrafficId = Guid.NewGuid(),
@@ -118,17 +117,38 @@ namespace SmartcityBackend.src.Services
             _db.SmartRouteTraffic.Add(record);
             await _db.SaveChangesAsync();
 
+            // ── Build response — includes routes[] with waypoints for map lines ──
+            var routesPayload = aiResult.Routes.Select(r => new
+            {
+                routeName = r.RouteName,
+                roadNames = r.RoadNames,
+                distanceKm = Math.Round(r.DistanceKm, 1),
+                estimatedMinutes = r.EstimatedMinutes,
+                congestionLevel = Math.Round(r.CongestionLevel, 1),
+                congestionStatus = r.CongestionStatus,
+                riskScore = Math.Round(r.RiskScore, 1),
+                reason = r.Reason,
+                isRecommended = r.IsRecommended,
+                waypoints = r.Waypoints.Select(w => new { lat = w.Lat, lng = w.Lng }),
+            }).ToList();
+
             return new
             {
                 routeTrafficId = record.RouteTrafficId,
                 originName = record.OriginName,
                 destinationName = record.DestinationName,
+                summary = aiResult.Summary,
+
+                // Best route summary
                 distanceKm = Math.Round(aiResult.DistanceKm, 1),
                 estimatedMinutes = aiResult.EstimatedMinutes,
                 congestionLevel = Math.Round(aiResult.CongestionLevel, 1),
                 congestionStatus = aiResult.CongestionStatus,
                 suggestion = aiResult.Suggestion,
                 riskScore = Math.Round(aiResult.RiskScore, 1),
+
+                // All route options with waypoints → frontend draws lines on map
+                routes = routesPayload,
             };
         }
 
