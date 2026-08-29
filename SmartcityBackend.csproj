@@ -23,7 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="src\AI\MLModels\EnergyTrainer\" />
+    <Folder Include="src\AI\MLModels\" />
   </ItemGroup>
 
 </Project>
