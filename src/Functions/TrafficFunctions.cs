@@ -6,92 +6,103 @@ using Newtonsoft.Json;
 using SmartcityBackend.src.Helpers;
 using SmartcityBackend.src.Services.Interfaces;
 using SmartcityBackend.src.ViewModels;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace SmartcityBackend.src.Functions
 {
     public class TrafficFunctions
     {
-        private readonly ILogger<TrafficFunctions> logger;
-        private readonly ITrafficService trafficService;
-        private readonly ITokenService tokenService;
+        private readonly ILogger<TrafficFunctions> _logger;
+        private readonly ITrafficService _trafficService;
+        private readonly ITokenService _tokenService;
 
         public TrafficFunctions(
             ILogger<TrafficFunctions> logger,
             ITrafficService trafficService,
             ITokenService tokenService)
         {
-            this.logger = logger;
-            this.trafficService = trafficService;
-            this.tokenService = tokenService;
+            _logger = logger;
+            _trafficService = trafficService;
+            _tokenService = tokenService;
         }
 
+        // GET /api/smartcity/traffic/summary
         [Function(nameof(GetTrafficSummary))]
         public async Task<IActionResult> GetTrafficSummary(
-            [HttpTrigger(AuthorizationLevel.Function, "get", Route = "smartcity/traffic/summary")]
-        HttpRequest req,
-            int status = 0,
-            string q = "",
-            int page = 1,
-            int pagesize = 10)
+            [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "smartcity/traffic/summary")]
+            HttpRequest req,
+            int status = 0, string q = "", int page = 1, int pagesize = 10)
         {
-            var token = Utility.GetAuthToken(req);
+            var auth = await AuthorizeAsync(req, SmartCityTaskActions.VIEW);
+            if (!auth.success) return new UnauthorizedResult();
 
-            var authorized = await tokenService.IsAuthorizedAsync(
-                token,
-                SmartCityTaskIds.SmartCityTraffic,
-                SmartCityTaskActions.VIEW);
-
-            if (!authorized.Success)
-            {
-                logger.LogInformation("{methodName} unauthorized. {message}", nameof(GetTrafficSummary), authorized.Message);
-                return new UnauthorizedResult();
-            }
-
-            var userId = tokenService.GetUserId(authorized.Data);
-
-            if (userId == null)
-            {
-                logger.LogInformation("{methodName} UserID is null", nameof(GetTrafficSummary));
-                return new UnauthorizedResult();
-            }
-
-            var data = await trafficService.GetTrafficSummary(userId.Value, status, q, page, pagesize);
+            var data = await _trafficService.GetTrafficSummary(
+                auth.userId, status, q, page, pagesize);
             return new OkObjectResult(data);
         }
 
+        // POST /api/smartcity/traffic/predict
         [Function(nameof(PredictTraffic))]
         public async Task<IActionResult> PredictTraffic(
-            [HttpTrigger(AuthorizationLevel.Function, "post", Route = "smartcity/traffic/predict")]
-        HttpRequest req)
+            [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "smartcity/traffic/predict")]
+            HttpRequest req)
         {
-            var token = Utility.GetAuthToken(req);
-
-            var authorized = await tokenService.IsAuthorizedAsync(
-                token,
-                SmartCityTaskIds.SmartCityTraffic,
-                SmartCityTaskActions.CREATE);
-
-            if (!authorized.Success)
-            {
-                logger.LogInformation("{methodName} unauthorized. {message}", nameof(PredictTraffic), authorized.Message);
-                return new UnauthorizedResult();
-            }
+            var auth = await AuthorizeAsync(req, SmartCityTaskActions.CREATE);
+            if (!auth.success) return new UnauthorizedResult();
 
             var body = await new StreamReader(req.Body).ReadToEndAsync();
             var request = JsonConvert.DeserializeObject<TrafficPredictionRequestVM>(body);
+            if (request == null) return new BadRequestObjectResult("Invalid request body.");
 
-            if (request == null)
-            {
-                return new BadRequestObjectResult("Invalid request body.");
-            }
-
-            var result = await trafficService.PredictTrafficAsync(request);
+            var result = await _trafficService.PredictTrafficAsync(request);
             return new OkObjectResult(result);
+        }
+
+        // POST /api/smartcity/traffic/route
+        [Function(nameof(AnalyseRoute))]
+        public async Task<IActionResult> AnalyseRoute(
+            [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "smartcity/traffic/route")]
+            HttpRequest req)
+        {
+            var auth = await AuthorizeAsync(req, SmartCityTaskActions.CREATE);
+            if (!auth.success) return new UnauthorizedResult();
+
+            var body = await new StreamReader(req.Body).ReadToEndAsync();
+            var request = JsonConvert.DeserializeObject<RouteTrafficRequestVM>(body);
+            if (request == null) return new BadRequestObjectResult("Invalid request body.");
+
+            if (string.IsNullOrWhiteSpace(request.OriginName) ||
+                string.IsNullOrWhiteSpace(request.DestinationName))
+                return new BadRequestObjectResult("Origin and destination names are required.");
+
+            var result = await _trafficService.AnalyseRouteAsync(auth.userId, request);
+            return new OkObjectResult(result);
+        }
+
+        // GET /api/smartcity/traffic/route/history
+        [Function(nameof(GetRouteHistory))]
+        public async Task<IActionResult> GetRouteHistory(
+            [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "smartcity/traffic/route/history")]
+            HttpRequest req,
+            int page = 1, int pagesize = 10)
+        {
+            var auth = await AuthorizeAsync(req, SmartCityTaskActions.VIEW);
+            if (!auth.success) return new UnauthorizedResult();
+
+            var data = await _trafficService.GetMyRouteHistoryAsync(auth.userId, page, pagesize);
+            return new OkObjectResult(data);
+        }
+
+        // ── Auth helper ───────────────────────────────────────────────────────
+        private async Task<(bool success, Guid userId)> AuthorizeAsync(HttpRequest req, Guid action)
+        {
+            var token = Utility.GetAuthToken(req);
+            var auth = await _tokenService.IsAuthorizedAsync(
+                token, SmartCityTaskIds.SmartCityTraffic, action);
+
+            if (!auth.Success) return (false, Guid.Empty);
+
+            var userId = _tokenService.GetUserId(auth.Data);
+            return userId.HasValue ? (true, userId.Value) : (false, Guid.Empty);
         }
     }
 }

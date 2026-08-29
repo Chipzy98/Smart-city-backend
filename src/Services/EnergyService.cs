@@ -5,30 +5,24 @@ using SmartcityBackend.src.Data;
 using SmartcityBackend.src.Entities;
 using SmartcityBackend.src.Services.Interfaces;
 using SmartcityBackend.src.ViewModels;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace SmartcityBackend.src.Services
 {
     public class EnergyService : IEnergyService
     {
-        private readonly SmartCityDbContext db;
-        private readonly IEnergyAIService energyAIService;
+        private readonly SmartCityDbContext _db;
+        private readonly IEnergyAIService _energyAIService;
 
-        public EnergyService(
-            SmartCityDbContext db,
-            IEnergyAIService energyAIService)
+        public EnergyService(SmartCityDbContext db, IEnergyAIService energyAIService)
         {
-            this.db = db;
-            this.energyAIService = energyAIService;
+            _db = db;
+            _energyAIService = energyAIService;
         }
 
+        // ── Get usage history ─────────────────────────────────────────────────
         public async Task<object> GetMyEnergyUsageAsync(Guid userId, string q, int page, int pageSize)
         {
-            var query = db.SmartEnergyUsage
+            var query = _db.SmartEnergyUsage
                 .Where(x => x.IsActive && x.UserId == userId)
                 .AsQueryable();
 
@@ -44,28 +38,28 @@ namespace SmartcityBackend.src.Services
                     x.UsageUnits,
                     x.Temperature,
                     x.Occupants,
+                    x.PredictedBill,   // now included
                     x.RecordedAt
                 })
                 .ToListAsync();
 
-            return new
-            {
-                totalCount,
-                page,
-                pageSize,
-                data
-            };
+            return new { totalCount, page, pageSize, data };
         }
 
+        // ── Predict + Save ────────────────────────────────────────────────────
         public async Task<object> PredictEnergyAsync(Guid userId, EnergyPredictionRequestVM request)
         {
-            var aiResult = energyAIService.Predict(new EnergyAIInput
+            // ✅ Use async version — avoids sync-over-async deadlock
+            var aiResult = await _energyAIService.PredictAsync(new EnergyAIInput
             {
                 UsageUnits = request.UsageUnits,
                 Temperature = request.Temperature,
-                Occupants = request.Occupants
+                Occupants = request.Occupants,
             });
 
+            var bill = (float)Math.Round(aiResult.PredictedBill, 2);
+
+            // Save with predicted bill
             var usage = new SmartEnergyUsage
             {
                 EnergyUsageId = Guid.NewGuid(),
@@ -73,19 +67,20 @@ namespace SmartcityBackend.src.Services
                 UsageUnits = request.UsageUnits,
                 Temperature = request.Temperature,
                 Occupants = request.Occupants,
+                PredictedBill = bill,
                 RecordedAt = DateTime.UtcNow,
                 CreatedDateTime = DateTime.UtcNow,
-                IsActive = true
+                IsActive = true,
             };
 
-            db.SmartEnergyUsage.Add(usage);
-            await db.SaveChangesAsync();
+            _db.SmartEnergyUsage.Add(usage);
+            await _db.SaveChangesAsync();
 
             return new
             {
-                predictedBill = Math.Round(aiResult.PredictedBill, 2),
+                predictedBill = bill,
                 currency = aiResult.Currency,
-                tip = aiResult.Tip
+                tip = aiResult.Tip,
             };
         }
     }

@@ -10,34 +10,31 @@ using SmartcityBackend.src.Services.Interfaces;
 
 var host = new HostBuilder()
     .ConfigureFunctionsWebApplication()
-    .ConfigureServices((context, services) =>
+    .ConfigureServices((_, services) =>
     {
-        var connectionString =
-            Environment.GetEnvironmentVariable("DefaultConnection");
+        services.AddDbContext<SmartCityDbContext>(o =>
+            o.UseSqlServer(Environment.GetEnvironmentVariable("DefaultConnection")));
 
-        services.AddDbContext<SmartCityDbContext>(options =>
-            options.UseSqlServer(connectionString));
-
-        // ── Named HttpClient for Claude API ───────────────────────────────
-        services.AddHttpClient("Anthropic", client =>
+        services.AddHttpClient("Anthropic", c =>
         {
-            client.BaseAddress = new Uri("https://api.anthropic.com");
-            client.Timeout = TimeSpan.FromSeconds(30);
+            c.BaseAddress = new Uri("https://api.anthropic.com");
+            c.Timeout = TimeSpan.FromSeconds(45);
         });
 
-        // ── Domain Services ───────────────────────────────────────────────
-        services.AddScoped<IAuthService, AuthService>();      // NEW
+        // ── Domain services ───────────────────────────────────────────────
+        services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<ITrafficService, TrafficService>();
         services.AddScoped<IWasteService, WasteService>();
         services.AddScoped<IEnergyService, EnergyService>();
         services.AddScoped<IDashboardService, DashboardService>();
 
-        // ── AI Services (Claude-powered) ──────────────────────────────────
+        // ── AI services ───────────────────────────────────────────────────
         services.AddSingleton<ITrafficAIService, TrafficAIService>();
+        services.AddSingleton<IRouteTrafficAIService, RouteTrafficAIService>();  // NEW
         services.AddSingleton<IEnergyAIService, EnergyAIService>();
         services.AddSingleton<IWasteAIService, WasteAIService>();
 
-        // ── Auth / Token ──────────────────────────────────────────────────
+        // ── Auth ──────────────────────────────────────────────────────────
         services.AddScoped<ITokenService, TokenService>();
     })
     .Build();
