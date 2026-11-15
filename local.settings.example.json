@@ -1,0 +1,22 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "DefaultConnection": "Server=localhost;Database=SmartCityDB;Trusted_Connection=True;TrustServerCertificate=True;",
+    "ANTHROPIC_API_KEY": "sk-ant-...",
+    "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+    "TOMTOM_API_KEY": "your-tomtom-key",
+    "GOOGLE_MAPS_API_KEY": "",
+    "GOOGLE_ROUTES_DAILY_LIMIT": "160",
+    "GOOGLE_COLLECT_EVERY_HOURS": "2",
+    "WAQI_API_TOKEN": "",
+    "WAQI_MAX_DISTANCE_KM": "25",
+    "JWT_SECRET": "change-me-to-a-random-string-of-at-least-32-characters",
+    "TRAFFIC_COLLECTOR_ENABLED": "true",
+    "APP_DATA_DIR": ""
+  },
+  "Host": {
+    "CORS": "http://localhost:3000"
+  }
+}
