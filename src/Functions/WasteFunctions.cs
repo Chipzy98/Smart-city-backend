@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
@@ -6,11 +6,6 @@ using Newtonsoft.Json;
 using SmartcityBackend.src.Helpers;
 using SmartcityBackend.src.Services.Interfaces;
 using SmartcityBackend.src.ViewModels;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace SmartcityBackend.src.Functions
 {
@@ -30,73 +25,55 @@ namespace SmartcityBackend.src.Functions
             this.tokenService = tokenService;
         }
 
+        // GET /api/smartcity/waste/my-records?q=&page=1&pagesize=10
         [Function(nameof(GetMyWasteRecords))]
         public async Task<IActionResult> GetMyWasteRecords(
-            [HttpTrigger(AuthorizationLevel.Function, "get", Route = "smartcity/waste/my-records")]
-        HttpRequest req,
-            string q = "",
-            int page = 1,
-            int pagesize = 10)
+            [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "smartcity/waste/my-records")]
+            HttpRequest req)
         {
-            var token = Utility.GetAuthToken(req);
-
-            var authorized = await tokenService.IsAuthorizedAsync(
-                token,
-                SmartCityTaskIds.SmartCityWaste,
-                SmartCityTaskActions.VIEW);
-
-            if (!authorized.Success)
+            var auth = await tokenService.AuthorizeAsync(req, SmartCityTaskIds.SmartCityWaste, SmartCityTaskActions.VIEW);
+            if (!auth.Success)
             {
-                logger.LogInformation("{methodName} unauthorized. {message}", nameof(GetMyWasteRecords), authorized.Message);
-                return new UnauthorizedResult();
+                logger.LogInformation("{methodName} denied. {message}", nameof(GetMyWasteRecords), auth.Message);
+                return AuthResults.Deny(auth);
             }
 
-            var userId = tokenService.GetUserId(authorized.Data);
-
-            if (userId == null)
-            {
-                return new UnauthorizedResult();
-            }
-
-            var data = await wasteService.GetMyWasteRecordsAsync(userId.Value, q, page, pagesize);
+            var data = await wasteService.GetMyWasteRecordsAsync(
+                auth.UserId!.Value,
+                req.Query["q"].FirstOrDefault() ?? "",
+                AuthResults.QueryInt(req, "page", 1, 1),
+                AuthResults.QueryInt(req, "pagesize", 10, 1, 100));
             return new OkObjectResult(data);
         }
 
+        // POST /api/smartcity/waste/classify   { imageUrl, imageBase64?, mediaType? }
         [Function(nameof(ClassifyWaste))]
         public async Task<IActionResult> ClassifyWaste(
-            [HttpTrigger(AuthorizationLevel.Function, "post", Route = "smartcity/waste/classify")]
-        HttpRequest req)
+            [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "smartcity/waste/classify")]
+            HttpRequest req)
         {
-            var token = Utility.GetAuthToken(req);
-
-            var authorized = await tokenService.IsAuthorizedAsync(
-                token,
-                SmartCityTaskIds.SmartCityWaste,
-                SmartCityTaskActions.CREATE);
-
-            if (!authorized.Success)
+            var auth = await tokenService.AuthorizeAsync(req, SmartCityTaskIds.SmartCityWaste, SmartCityTaskActions.CREATE);
+            if (!auth.Success)
             {
-                logger.LogInformation("{methodName} unauthorized. {message}", nameof(ClassifyWaste), authorized.Message);
-                return new UnauthorizedResult();
-            }
-
-            var userId = tokenService.GetUserId(authorized.Data);
-
-            if (userId == null)
-            {
-                return new UnauthorizedResult();
+                logger.LogInformation("{methodName} denied. {message}", nameof(ClassifyWaste), auth.Message);
+                return AuthResults.Deny(auth);
             }
 
             var body = await new StreamReader(req.Body).ReadToEndAsync();
             var request = JsonConvert.DeserializeObject<WasteClassifyRequestVM>(body);
 
-            if (request == null)
-            {
-                return new BadRequestObjectResult("Invalid request body.");
-            }
+            if (request == null || (string.IsNullOrWhiteSpace(request.ImageUrl) && string.IsNullOrWhiteSpace(request.ImageBase64)))
+                return new BadRequestObjectResult(new { error = "An image URL or uploaded image is required." });
 
-            var result = await wasteService.ClassifyWasteAsync(userId.Value, request);
-            return new OkObjectResult(result);
+            try
+            {
+                var result = await wasteService.ClassifyWasteAsync(auth.UserId!.Value, request);
+                return new OkObjectResult(result);
+            }
+            catch (ArgumentException ex)
+            {
+                return new BadRequestObjectResult(new { error = ex.Message });
+            }
         }
     }
 }

@@ -1,14 +1,12 @@
 ﻿using SmartcityBackend.src.AI.Models;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
-namespace SmartcityBackend.src.AI.Interfaces
+namespace SmartcityBackend.src.AI.Interfaces;
+
+public interface IWasteAIService
 {
-    public interface IWasteAIService
-    {
-        WasteAIOutput Classify(WasteAIInput input);
-    }
+    /// <summary>Synchronous wrapper — prefer <see cref="ClassifyAsync"/> in new code.</summary>
+    WasteAIOutput Classify(WasteAIInput input);
+
+    /// <summary>Async waste classification with cancellation support.</summary>
+    Task<WasteAIOutput> ClassifyAsync(WasteAIInput input, CancellationToken ct = default);
 }

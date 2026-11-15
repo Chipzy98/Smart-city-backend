@@ -1,5 +1,8 @@
+using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 using SmartcityBackend.src.AI.Interfaces;
 using SmartcityBackend.src.AI.Models;
+using SmartcityBackend.src.Helpers;
 using System.Text;
 using System.Text.Json;
 
@@ -8,116 +11,185 @@ namespace SmartcityBackend.src.AI.Services;
 public class TrafficAIService : ITrafficAIService
 {
     private readonly HttpClient _httpClient;
+    private readonly ILogger<TrafficAIService> _logger;
     private readonly string _apiKey;
 
     private const string ApiUrl = "https://api.anthropic.com/v1/messages";
-    private const string Model  = "claude-sonnet-4-6";
+    private static string Model => AppConfig.AnthropicModel;
+    private const string ApiVersion = "2023-06-01";
+    private const int MaxTokens = 300;
+    private const int RetryCount = 2;
 
-    // IHttpClientFactory DI walata — Program.cs ta AddHttpClient("Anthropic") add karanna
-    public TrafficAIService(IHttpClientFactory httpClientFactory)
+    // Training data context file path
+    private static string TrainingFile => AppConfig.TrainingFile("traffic");
+
+    public TrafficAIService(IHttpClientFactory httpClientFactory, ILogger<TrafficAIService> logger)
     {
         _httpClient = httpClientFactory.CreateClient("Anthropic");
-        _apiKey     = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")
-                      ?? throw new InvalidOperationException("ANTHROPIC_API_KEY not set.");
+        _logger = logger;
+        _apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")
+                      ?? string.Empty; // missing key → calls fail → rule-based fallback
     }
 
     public TrafficAIOutput Predict(TrafficAIInput input)
-        => PredictAsync(input).GetAwaiter().GetResult();
+        => PredictAsync(input, CancellationToken.None).GetAwaiter().GetResult();
 
-    // ─────────────────────────────────────────────────────────────
-    private async Task<TrafficAIOutput> PredictAsync(TrafficAIInput input)
+    public async Task<TrafficAIOutput> PredictAsync(TrafficAIInput input, CancellationToken ct = default)
     {
         var weatherLabel = (int)input.Weather switch
         {
-            0 => "Clear", 1 => "Cloudy", 2 => "Rainy", 3 => "Stormy", _ => "Unknown"
+            0 => "Clear",
+            1 => "Cloudy",
+            2 => "Rainy",
+            3 => "Stormy",
+            _ => "Unknown"
         };
-
         var dayLabel = (int)input.Day switch
         {
-            0 => "Sunday", 1 => "Monday", 2 => "Tuesday", 3 => "Wednesday",
-            4 => "Thursday", 5 => "Friday", 6 => "Saturday", _ => "Weekday"
+            0 => "Sunday",
+            1 => "Monday",
+            2 => "Tuesday",
+            3 => "Wednesday",
+            4 => "Thursday",
+            5 => "Friday",
+            6 => "Saturday",
+            _ => "Weekday"
         };
+        var isRushHour = (input.Hour is >= 7 and <= 9) || (input.Hour is >= 17 and <= 19);
+        var isWeekend = input.Day is 0 or 6;
 
-        var prompt = $$"""
-            You are a smart city traffic analysis AI.
-            Predict the congestion level (0–100) for the following real-time conditions.
+        // Load training context if available
+        var trainingContext = LoadTrainingContext();
 
-            - Hour of day  : {{input.Hour}}:00
-            - Day of week  : {{dayLabel}}
-            - Weather      : {{weatherLabel}}
-            - Vehicle count: {{input.VehicleCount}}
+        var prompt =
+            "You are a smart city traffic analysis AI.\n" +
+            "Predict the congestion level (0-100) and return ONLY JSON.\n\n" +
+            "=== Current Conditions ===\n" +
+            $"- Time: {input.Hour:00}:00  |  Day: {dayLabel}  |  Rush hour: {(isRushHour ? "Yes" : "No")}  |  Weekend: {(isWeekend ? "Yes" : "No")}\n" +
+            $"- Weather: {weatherLabel}  |  Vehicle count: {input.VehicleCount}\n\n" +
+            trainingContext +
+            "Reply ONLY with this JSON (no markdown):\n" +
+            "{\n" +
+            "  \"predictedCongestionLevel\": <float 0-100>,\n" +
+            "  \"status\": \"<Low Congestion | Moderate Congestion | High Congestion>\",\n" +
+            "  \"suggestion\": \"<one practical tip for drivers>\"\n" +
+            "}";
 
-            Reply ONLY with a JSON object, no markdown, no explanation:
+        for (var attempt = 0; attempt <= RetryCount && !string.IsNullOrWhiteSpace(_apiKey); attempt++) // no key → straight to fallback
+        {
+            try
             {
-              "predictedCongestionLevel": <float 0-100>,
-              "status": "<Low Congestion | Moderate Congestion | High Congestion>",
-              "suggestion": "<one clear, practical tip for drivers>"
-            }
-            """;
+                var text = await CallClaudeAsync(prompt, MaxTokens, ct);
+                using var doc = JsonDocument.Parse(CleanJson(text));
+                var root = doc.RootElement;
+                var level = Math.Clamp(root.GetProperty("predictedCongestionLevel").GetSingle(), 0f, 100f);
 
+                _logger.LogInformation("[TrafficAI] level={Level}", level);
+
+                return new TrafficAIOutput
+                {
+                    PredictedCongestionLevel = level,
+                    Status = root.GetProperty("status").GetString() ?? StatusFromLevel(level),
+                    Suggestion = root.GetProperty("suggestion").GetString() ?? DefaultSuggestion(level)
+                };
+            }
+            catch (Exception ex) when (attempt < RetryCount)
+            {
+                _logger.LogWarning(ex, "[TrafficAI] Attempt {A} failed, retrying…", attempt + 1);
+                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[TrafficAI] All attempts failed — fallback.");
+            }
+        }
+
+        return FallbackPredict(input);
+    }
+
+    // ── Training context loader ───────────────────────────────────────────────
+    private static string LoadTrainingContext()
+    {
         try
         {
-            var text = await CallClaudeAsync(prompt, maxTokens: 200);
+            if (!File.Exists(TrainingFile)) return string.Empty;
 
-            using var doc  = JsonDocument.Parse(CleanJson(text));
-            var root       = doc.RootElement;
-            var level      = Math.Clamp(root.GetProperty("predictedCongestionLevel").GetSingle(), 0f, 100f);
+            var json = File.ReadAllText(TrainingFile);
+            var ctx = JsonConvert.DeserializeObject<dynamic>(json);
+            if (ctx == null) return string.Empty;
 
-            return new TrafficAIOutput
+            var rows = ctx.Rows as Newtonsoft.Json.Linq.JArray;
+            var headers = ctx.Headers as Newtonsoft.Json.Linq.JArray;
+            if (rows == null || headers == null) return string.Empty;
+
+            var sb = new StringBuilder();
+            sb.AppendLine("=== Historical Training Data (use as reference) ===");
+            sb.AppendLine(string.Join(", ", headers));
+
+            // Take up to 10 example rows
+            foreach (var row in rows.Take(10))
             {
-                PredictedCongestionLevel = level,
-                Status     = root.GetProperty("status").GetString()     ?? StatusFromLevel(level),
-                Suggestion = root.GetProperty("suggestion").GetString() ?? "Drive safely."
-            };
+                sb.AppendLine(string.Join(", ", row));
+            }
+            sb.AppendLine();
+
+            return sb.ToString();
         }
         catch
         {
-            // Fallback: original mock formula
-            var level = Math.Clamp(
-                (input.VehicleCount * 0.08f) + (input.Hour * 1.5f) + (input.Weather * 5),
-                0f, 100f);
-
-            return new TrafficAIOutput
-            {
-                PredictedCongestionLevel = level,
-                Status     = StatusFromLevel(level),
-                Suggestion = level >= 75 ? "Use an alternative route."
-                           : level >= 40 ? "Drive carefully. Moderate traffic expected."
-                           : "Route is clear."
-            };
+            return string.Empty;
         }
     }
 
-    // ─────────────────────────────────────────────────────────────
-    private async Task<string> CallClaudeAsync(string prompt, int maxTokens)
+    // ── Claude API call ───────────────────────────────────────────────────────
+    private async Task<string> CallClaudeAsync(string prompt, int maxTokens, CancellationToken ct)
     {
-        var body = JsonSerializer.Serialize(new
+        var body = System.Text.Json.JsonSerializer.Serialize(new
         {
-            model    = Model,
+            model = Model,
             max_tokens = maxTokens,
             messages = new[] { new { role = "user", content = prompt } }
         });
 
-        var req = new HttpRequestMessage(HttpMethod.Post, ApiUrl);
-        req.Headers.Add("x-api-key",          _apiKey);
-        req.Headers.Add("anthropic-version",  "2023-06-01");
+        using var req = new HttpRequestMessage(HttpMethod.Post, ApiUrl);
+        req.Headers.Add("x-api-key", _apiKey);
+        req.Headers.Add("anthropic-version", ApiVersion);
         req.Content = new StringContent(body, Encoding.UTF8, "application/json");
 
-        var res  = await _httpClient.SendAsync(req);
+        var res = await _httpClient.SendAsync(req, ct);
         res.EnsureSuccessStatusCode();
 
-        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
         return doc.RootElement.GetProperty("content")[0].GetProperty("text").GetString() ?? "{}";
     }
 
     private static string CleanJson(string text)
     {
         text = text.Trim();
-        if (text.StartsWith("```")) text = text.Split('\n', 2).Last();
-        if (text.EndsWith("```"))   text = text[..text.LastIndexOf("```")];
+        if (text.StartsWith("```")) { var lines = text.Split('\n', 2); text = lines.Length > 1 ? lines[1] : text; }
+        if (text.EndsWith("```")) text = text[..text.LastIndexOf("```")];
         return text.Trim();
     }
 
-    private static string StatusFromLevel(float level)
-        => level >= 75 ? "High Congestion" : level >= 40 ? "Moderate Congestion" : "Low Congestion";
+    private static TrafficAIOutput FallbackPredict(TrafficAIInput input)
+    {
+        var isRushHour = (input.Hour is >= 7 and <= 9) || (input.Hour is >= 17 and <= 19);
+        var level = Math.Clamp(
+            (input.VehicleCount * 0.08f) + (isRushHour ? 20f : 0f)
+            + (input.Hour * 1.2f) + (input.Weather * 6f), 0f, 100f);
+        return new TrafficAIOutput
+        {
+            PredictedCongestionLevel = level,
+            Status = StatusFromLevel(level),
+            Suggestion = DefaultSuggestion(level)
+        };
+    }
+
+    private static string StatusFromLevel(float l)
+        => l >= 75 ? "High Congestion" : l >= 40 ? "Moderate Congestion" : "Low Congestion";
+
+    private static string DefaultSuggestion(float l)
+        => l >= 75 ? "Heavy traffic — consider alternate route or delay trip."
+         : l >= 40 ? "Moderate traffic — allow extra travel time."
+         : "Roads are clear — safe to proceed.";
 }

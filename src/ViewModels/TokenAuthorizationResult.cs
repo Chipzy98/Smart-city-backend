@@ -1,10 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace SmartcityBackend.src.ViewModels
+﻿namespace SmartcityBackend.src.ViewModels
 {
     public class TokenAuthorizationResult
     {
@@ -12,6 +6,14 @@ namespace SmartcityBackend.src.ViewModels
 
         public string Message { get; set; } = string.Empty;
 
+        /// <summary>The validated JwtSecurityToken (kept for GetUserId compatibility).</summary>
         public object? Data { get; set; }
+
+        public Guid? UserId { get; set; }
+
+        public string Role { get; set; } = string.Empty;
+
+        /// <summary>True when the token is valid but the role is not allowed (→ 403).</summary>
+        public bool Forbidden { get; set; }
     }
 }

@@ -5,18 +5,16 @@ using SmartcityBackend.src.Data;
 using SmartcityBackend.src.Entities;
 using SmartcityBackend.src.Services.Interfaces;
 using SmartcityBackend.src.ViewModels;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace SmartcityBackend.src.Services
 {
     public class WasteService : IWasteService
     {
+        // ~5 MB image → ~6.7 M base64 chars. Claude API allows up to 10 MB base64 per image.
+        private const int MaxBase64Length = 8_000_000;
+
         private readonly SmartCityDbContext db;
-        private IWasteAIService wasteAIService;
+        private readonly IWasteAIService wasteAIService;
 
         public WasteService(
             SmartCityDbContext db,
@@ -28,14 +26,11 @@ namespace SmartcityBackend.src.Services
 
         public async Task<object> GetMyWasteRecordsAsync(Guid userId, string q, int page, int pageSize)
         {
-            var query = db.SmartWasteRecord
-                .Where(x => x.IsActive && x.UserId == userId)
-                .AsQueryable();
+            var mine = db.SmartWasteRecord.Where(x => x.IsActive && x.UserId == userId);
 
+            var query = mine;
             if (!string.IsNullOrWhiteSpace(q))
-            {
                 query = query.Where(x => x.Category.Contains(q));
-            }
 
             var totalCount = await query.CountAsync();
 
@@ -54,27 +49,57 @@ namespace SmartcityBackend.src.Services
                 })
                 .ToListAsync();
 
-            return new
+            // Stats over ALL of the user's records (not only the current page)
+            var categoryCounts = await mine
+                .GroupBy(x => x.Category)
+                .Select(g => new { category = g.Key, count = g.Count() })
+                .ToListAsync();
+
+            var stats = new
             {
-                totalCount,
-                page,
-                pageSize,
-                data
+                totalCount = categoryCounts.Sum(c => c.count),
+                totalCo2Saved = Math.Round((await mine.SumAsync(x => (double?)x.Co2Saved)) ?? 0, 2),
+                categoryCounts = categoryCounts.ToDictionary(c => c.category, c => c.count),
             };
+
+            return new { totalCount, page, pageSize, data, stats };
         }
 
         public async Task<object> ClassifyWasteAsync(Guid userId, WasteClassifyRequestVM request)
         {
-            var aiResult = wasteAIService.Classify(new WasteAIInput
+            var base64 = request.ImageBase64;
+            if (!string.IsNullOrWhiteSpace(base64))
             {
-                ImageUrl = request.ImageUrl
+                // Accept a full data URL too: "data:image/png;base64,AAAA..."
+                var comma = base64.IndexOf(',');
+                var semicolon = base64.IndexOf(';');
+                if (base64.StartsWith("data:", StringComparison.OrdinalIgnoreCase) && comma > 0)
+                {
+                    if (semicolon > 5 && semicolon < comma) request.MediaType ??= base64[5..semicolon];
+                    base64 = base64[(comma + 1)..];
+                }
+                if (base64.Length > MaxBase64Length)
+                    throw new ArgumentException("Image is too large. Please upload an image under 5 MB.");
+            }
+
+            // ✅ async — no sync-over-async blocking
+            var aiResult = await wasteAIService.ClassifyAsync(new WasteAIInput
+            {
+                ImageUrl = request.ImageUrl,
+                ImageBase64 = base64,
+                MediaType = request.MediaType,
             });
+
+            // Base64 is never stored in the DB — only the URL or "upload:<file name>"
+            var storedImage = string.IsNullOrWhiteSpace(base64)
+                ? request.ImageUrl
+                : $"upload:{request.ImageUrl}";
 
             var record = new SmartWasteRecord
             {
                 WasteRecordId = Guid.NewGuid(),
                 UserId = userId,
-                ImageUrl = request.ImageUrl,
+                ImageUrl = storedImage.Length > 500 ? storedImage[..500] : storedImage,
                 Category = aiResult.Category,
                 Confidence = aiResult.Confidence,
                 Co2Saved = aiResult.Co2Saved,

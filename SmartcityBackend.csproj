@@ -27,11 +27,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="src\AI\MLModels\EnergyTrainer\" />
-  </ItemGroup>
-
-  <ItemGroup>
     <None Include="Properties\serviceDependencies.local.json.user" />
+    <None Include="src\AI\MLModels\EnergyTrainer\EnergyTrainer.csproj" />
+    <None Include="src\AI\MLModels\TrafficTrainer\TrafficTrainer.csproj" />
   </ItemGroup>
 
 </Project>
